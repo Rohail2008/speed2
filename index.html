@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Offline GPS Speed Tracker</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      margin: 0;
+      background: #f4f6f8;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .container {
+      width: 100%;
+      max-width: 900px;
+      background: #fff;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 0 15px rgba(0,0,0,0.1);
+      box-sizing: border-box;
+    }
+    h1 {
+      text-align: center;
+    }
+    #map {
+      height: 300px;
+      margin: 20px 0;
+      border-radius: 10px;
+    }
+    .stats p {
+      margin: 4px 0;
+    }
+    .controls input, .controls button {
+      margin: 5px;
+    }
+    .notifications {
+      background: #e3f2fd;
+      padding: 10px;
+      border-radius: 8px;
+      font-weight: bold;
+    }
+    ul {
+      padding-left: 20px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    li.over-speed {
+      color: red;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>GPS Speed Tracker</h1>
+
+    <div id="map"></div>
+
+    <div class="stats">
+      <p>Current Speed: <strong id="currentSpeed">0</strong> MPH</p>
+      <p>Max Speed: <strong id="maxSpeed">0</strong> MPH</p>
+      <p>Average Speed: <strong id="avgSpeed">0</strong> MPH</p>
+      <p>Speed Limit: <strong id="speedLimit">0</strong> MPH</p>
+    </div>
+
+    <div class="controls">
+      <input type="number" id="limitInput" placeholder="Set Speed Limit (MPH)">
+      <button id="setSpeedBtn">Set Speed Limit</button>
+      <button id="startStopBtn">Start Tracking</button>
+      <button id="clearHistoryBtn">Clear History</button>
+      <button id="downloadMapBtn">Download Offline Map</button>
+      <button id="shareLocationBtn">Share Location</button>
+    </div>
+
+    <div class="notifications" id="notification">Set a speed limit to start tracking.</div>
+
+    <div class="history">
+      <h3>Speed Notifications</h3>
+      <ul id="historyList"></ul>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet.offline@2.0.0/leaflet.offline.js"></script>
+  <script>
+    let map = L.map('map').setView([0, 0], 13);
+    let marker = L.marker([0, 0]).addTo(map);
+    let tileLayer = L.tileLayer.offline('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const speedEl = document.getElementById('currentSpeed');
+    const maxSpeedEl = document.getElementById('maxSpeed');
+    const avgSpeedEl = document.getElementById('avgSpeed');
+    const speedLimitEl = document.getElementById('speedLimit');
+    const notification = document.getElementById('notification');
+    const historyList = document.getElementById('historyList');
+
+    const limitInput = document.getElementById('limitInput');
+    const setSpeedBtn = document.getElementById('setSpeedBtn');
+    const startStopBtn = document.getElementById('startStopBtn');
+    const clearHistoryBtn = document.getElementById('clearHistoryBtn');
+    const downloadMapBtn = document.getElementById('downloadMapBtn');
+    const shareLocationBtn = document.getElementById('shareLocationBtn');
+
+    let isTracking = false;
+    let watchId = null;
+    let maxSpeed = 0;
+    let speedSum = 0;
+    let speedCount = 0;
+    let speedLimit = localStorage.getItem('speedLimit') ? parseInt(localStorage.getItem('speedLimit')) : 0;
+    let history = JSON.parse(localStorage.getItem('speedHistory')) || [];
+
+    function updateSpeedDisplay() {
+      speedLimitEl.textContent = speedLimit;
+      localStorage.setItem('speedLimit', speedLimit);
+    }
+
+    function saveHistory() {
+      localStorage.setItem('speedHistory', JSON.stringify(history));
+    }
+
+    function logHistory(msg, speed, isOver) {
+      const item = document.createElement('li');
+      item.textContent = `${new Date().toLocaleTimeString()}: ${msg} (${speed.toFixed(1)} MPH)`;
+      if (isOver) item.classList.add('over-speed');
+      historyList.prepend(item);
+      history.unshift({ time: new Date().toLocaleTimeString(), msg, speed });
+      saveHistory();
+    }
+
+    function loadHistory() {
+      historyList.innerHTML = '';
+      history.forEach(entry => {
+        const item = document.createElement('li');
+        item.textContent = `${entry.time}: ${entry.msg} (${entry.speed.toFixed(1)} MPH)`;
+        if (entry.msg.includes('Over')) item.classList.add('over-speed');
+        historyList.appendChild(item);
+      });
+    }
+
+    function handlePosition(pos) {
+      const coords = pos.coords;
+      const speed = coords.speed != null ? coords.speed * 2.23694 : 0;
+
+      if (coords.latitude && coords.longitude) {
+        marker.setLatLng([coords.latitude, coords.longitude]);
+        map.setView([coords.latitude, coords.longitude], 16);
+      }
+
+      speedSum += speed;
+      speedCount++;
+      maxSpeed = Math.max(maxSpeed, speed);
+
+      speedEl.textContent = speed.toFixed(1);
+      maxSpeedEl.textContent = maxSpeed.toFixed(1);
+      avgSpeedEl.textContent = (speedSum / speedCount).toFixed(1);
+
+      if (speed > speedLimit) {
+        notification.textContent = `⚠️ Over Speed Limit! ${speed.toFixed(1)} MPH > ${speedLimit} MPH`;
+        logHistory("Over Speed Limit!", speed, true);
+      } else {
+        notification.textContent = `Speed OK: ${speed.toFixed(1)} MPH`;
+        logHistory("Speed OK", speed, false);
+      }
+    }
+
+    function handleError(err) {
+      notification.textContent = "Error: " + err.message;
+    }
+
+    setSpeedBtn.onclick = () => {
+      speedLimit = parseInt(limitInput.value);
+      if (!speedLimit) {
+        alert('Please enter a valid speed limit.');
+        return;
+      }
+      updateSpeedDisplay();
+      notification.textContent = `Speed limit set to ${speedLimit} MPH.`;
+    };
+
+    startStopBtn.onclick = () => {
+      if (!speedLimit) {
+        alert('You must set a speed limit before tracking.');
+        return;
+      }
+
+      if (!isTracking) {
+        speedSum = 0;
+        speedCount = 0;
+        maxSpeed = 0;
+        watchId = navigator.geolocation.watchPosition(handlePosition, handleError, {
+          enableHighAccuracy: true,
+          maximumAge: 0,
+          timeout: 10000
+        });
+        startStopBtn.textContent = "Stop Tracking";
+        isTracking = true;
+        notification.textContent = "Tracking started.";
+      } else {
+        navigator.geolocation.clearWatch(watchId);
+        isTracking = false;
+        startStopBtn.textContent = "Start Tracking";
+        notification.textContent = "Tracking stopped.";
+      }
+    };
+
+    clearHistoryBtn.onclick = () => {
+      if (!speedLimit) {
+        alert('You must set a speed limit before clearing history.');
+        return;
+      }
+      history = [];
+      localStorage.removeItem('speedHistory');
+      historyList.innerHTML = '';
+      notification.textContent = "History cleared.";
+    };
+
+    downloadMapBtn.onclick = () => {
+      tileLayer.saveTiles({ minZoom: 12, maxZoom: 16 });
+      notification.textContent = "Offline map downloading...";
+    };
+
+    shareLocationBtn.onclick = () => {
+      if (marker.getLatLng().lat === 0 && marker.getLatLng().lng === 0) {
+        alert('No location available yet. Start tracking first.');
+        return;
+      }
+      const url = `https://www.google.com/maps?q=${marker.getLatLng().lat},${marker.getLatLng().lng}`;
+      navigator.clipboard.writeText(url);
+      alert('Location link copied to clipboard!');
+    };
+
+    updateSpeedDisplay();
+    loadHistory();
+  </script>
+</body>
+</html>
